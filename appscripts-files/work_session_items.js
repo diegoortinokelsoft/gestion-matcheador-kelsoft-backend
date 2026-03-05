@@ -1,281 +1,434 @@
 /**
  * work_session_items.gs
- * API de Apps Script para el detalle de jornadas por iniciativa
- * 
- * Esquema de la hoja work_session_items:
- * - item_id (string)
- * - session_id (string)
- * - user_id (number)
- * - session_date (date object - dd/mm/aaaa)
- * - initiative_id (string)
- * - initiative_name (string)
- * - task_type (string: TAG, SEARCH, OTHER)
- * - tasks_done_count (number)
- * - target_task_count (number)
- * - is_target_met (boolean - valor derivado)
- * - notes (string)
- * - created_at (string - dd/mm/aaaa)
- * - updated_at (string - dd/mm/aaaa)
- * - updated_by (number)
- * - version (number)
- * 
- * Regla de unicidad: (session_id + initiative_id)
+ * Data access for work_session_items.
+ *
+ * Rules:
+ * - No business logic
+ * - Last write wins
+ * - No version checks
+ * - update_* only overwrites existing columns
  */
 
-const WORK_SESSION_ITEMS_SHEET_NAME = "work_session_items";
+const WORK_SESSION_ITEMS_SHEET_NAME = 'work_session_items';
 
-/**
- * Crea o actualiza un registro de iniciativa dentro de una jornada (upsert)
- * Si existe, incrementa tasks_done_count; si no, crea nuevo registro
- * 
- * @param {string} session_id - ID de la jornada
- * @param {string} initiative_id - ID de la iniciativa
- * @param {number} deltaTasks - Cantidad de tareas a agregar al contador
- * @param {Object} patchData - Datos adicionales opcionales
- * @returns {Object} Respuesta con éxito o error
- */
-function upsert_session_item(session_id, initiative_id, deltaTasks, patchData = {}) {
+function create_item(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSION_ITEMS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const sessionIdIndex = headers.indexOf("session_id");
-    const initiativeIdIndex = headers.indexOf("initiative_id");
-    const tasksCountIndex = headers.indexOf("tasks_done_count");
-    const versionIndex = headers.indexOf("version");
-    const updatedAtIndex = headers.indexOf("updated_at");
-    const updatedByIndex = headers.indexOf("updated_by");
-    
-    // Buscar si ya existe el registro
-    let existingRowIndex = -1;
-    let currentTasksCount = 0;
-    let currentVersion = 0;
-    
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][sessionIdIndex] === session_id && data[i][initiativeIdIndex] === initiative_id) {
-        existingRowIndex = i + 1;
-        currentTasksCount = data[i][tasksCountIndex] || 0;
-        currentVersion = data[i][versionIndex] || 0;
-        break;
-      }
+    const payload = wsiAsObjectOrNull_(params);
+    if (!payload) {
+      return wsiBadRequest_('params must be an object');
     }
-    
-    const now = format_date(new Date());
-    
-    if (existingRowIndex !== -1) {
-      // Actualizar registro existente
-      const newTasksCount = currentTasksCount + deltaTasks;
-      sheet.getRange(existingRowIndex, tasksCountIndex + 1).setValue(newTasksCount);
-      
-      // Actualizar otros campos si se proporcionan
-      headers.forEach((header, index) => {
-        if (patchData.hasOwnProperty(header) && header !== "item_id" && header !== "session_id" && header !== "initiative_id") {
-          sheet.getRange(existingRowIndex, index + 1).setValue(patchData[header]);
-        }
-      });
-      
-      // Incrementar versión y actualizar metadatos
-      sheet.getRange(existingRowIndex, versionIndex + 1).setValue(currentVersion + 1);
-      sheet.getRange(existingRowIndex, updatedAtIndex + 1).setValue(now);
-      if (patchData.updated_by) {
-        sheet.getRange(existingRowIndex, updatedByIndex + 1).setValue(patchData.updated_by);
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const lastColumn = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const createdAt = payload.created_at || wsiNowStr_();
+
+    const row = headers.map(function (header) {
+      if (Object.prototype.hasOwnProperty.call(payload, header)) {
+        return payload[header];
       }
-      
-      return success_response({ 
-        item_id: data[existingRowIndex - 1][headers.indexOf("item_id")],
-        action: "updated",
-        tasks_done_count: newTasksCount
-      });
-    } else {
-      // Crear nuevo registro
-      const item_id = generate_unique_id("ITEM");
-      
-      const newRow = [];
-      headers.forEach(header => {
-        if (header === "item_id") {
-          newRow.push(item_id);
-        } else if (header === "session_id") {
-          newRow.push(session_id);
-        } else if (header === "initiative_id") {
-          newRow.push(initiative_id);
-        } else if (header === "tasks_done_count") {
-          newRow.push(deltaTasks);
-        } else if (header === "created_at") {
-          newRow.push(now);
-        } else if (header === "updated_at") {
-          newRow.push(now);
-        } else if (header === "version") {
-          newRow.push(1);
-        } else if (header === "is_target_met") {
-          newRow.push(false);
-        } else {
-          newRow.push(patchData[header] || "");
-        }
-      });
-      
-      sheet.appendRow(newRow);
-      
-      return success_response({ 
-        item_id: item_id,
-        action: "created",
-        tasks_done_count: deltaTasks
-      });
-    }
+      if (header === 'item_id') {
+        return wsiGenerateId_();
+      }
+      if (header === 'created_at') {
+        return createdAt;
+      }
+      if (header === 'updated_at') {
+        return payload.updated_at || createdAt;
+      }
+      return '';
+    });
+
+    sheet.appendRow(row);
+    return success_response(wsiReadRowAsObject_(sheet, sheet.getLastRow()));
   } catch (error) {
-    Logger.log(`Error in upsert_session_item: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return wsiInternalError_('create_item', error);
   }
 }
 
-/**
- * Lista todas las iniciativas trabajadas en una jornada
- * 
- * @param {string} session_id - ID de la jornada
- * @returns {Object} Respuesta con array de items o error
- */
-function list_items_by_session(session_id) {
+function get_item_by_id(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSION_ITEMS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const items = [];
-    const sessionIdIndex = headers.indexOf("session_id");
-    
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][sessionIdIndex] === session_id) {
-        const item = {};
-        headers.forEach((header, index) => {
-          item[header] = data[i][index];
-        });
-        items.push(item);
-      }
+    const payload = wsiAsObjectOrNull_(params) || { item_id: params };
+    const itemId = payload ? payload.item_id : null;
+    if (!itemId) {
+      return wsiBadRequest_('item_id is required');
     }
-    
-    return success_response(items);
-  } catch (error) {
-    Logger.log(`Error in list_items_by_session: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
-  }
-}
 
-/**
- * Lista el detalle de actividad de un usuario en una fecha específica
- * 
- * @param {number} user_id - ID del usuario
- * @param {string} session_date - Fecha en formato dd/mm/aaaa
- * @returns {Object} Respuesta con array de items o error
- */
-function list_items_by_user_and_date(user_id, session_date) {
-  try {
-    const sheet = get_sheet_by_name(WORK_SESSION_ITEMS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const items = [];
-    const userIdIndex = headers.indexOf("user_id");
-    const sessionDateIndex = headers.indexOf("session_date");
-    
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][userIdIndex] === user_id && data[i][sessionDateIndex] === session_date) {
-        const item = {};
-        headers.forEach((header, index) => {
-          item[header] = data[i][index];
-        });
-        items.push(item);
-      }
-    }
-    
-    return success_response(items);
-  } catch (error) {
-    Logger.log(`Error in list_items_by_user_and_date: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
-  }
-}
-
-/**
- * Actualiza un registro de item existente
- * 
- * @param {string} item_id - ID del item
- * @param {Object} patch_data - Campos a actualizar
- * @param {number} updated_by - ID del usuario que realiza la actualización
- * @returns {Object} Respuesta con éxito o error
- */
-function update_session_item(item_id, patch_data, updated_by) {
-  try {
-    const sheet = get_sheet_by_name(WORK_SESSION_ITEMS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const itemIdIndex = headers.indexOf("item_id");
-    const versionIndex = headers.indexOf("version");
-    const updatedAtIndex = headers.indexOf("updated_at");
-    const updatedByIndex = headers.indexOf("updated_by");
-    
-    // Buscar el item
-    let rowIndex = -1;
-    let currentVersion = 0;
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][itemIdIndex] === item_id) {
-        rowIndex = i + 1;
-        currentVersion = data[i][versionIndex];
-        break;
-      }
-    }
-    
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rowIndex = wsiFindRowByValue_(sheet, 'item_id', itemId);
     if (rowIndex === -1) {
-      return error_response("ITEM_NOT_FOUND", "Session item not found", { item_id: item_id });
+      return success_response(null);
     }
-    
-    // Actualizar los campos
-    headers.forEach((header, index) => {
-      if (patch_data.hasOwnProperty(header) && header !== "item_id" && header !== "version") {
-        sheet.getRange(rowIndex, index + 1).setValue(patch_data[header]);
-      }
-    });
-    
-    // Incrementar versión
-    sheet.getRange(rowIndex, versionIndex + 1).setValue(currentVersion + 1);
-    
-    // Actualizar metadatos
-    sheet.getRange(rowIndex, updatedAtIndex + 1).setValue(format_date(new Date()));
-    sheet.getRange(rowIndex, updatedByIndex + 1).setValue(updated_by);
-    
-    return success_response({ 
-      item_id: item_id, 
-      updated: true,
-      version: currentVersion + 1
-    });
+
+    return success_response(wsiReadRowAsObject_(sheet, rowIndex));
   } catch (error) {
-    Logger.log(`Error in update_session_item: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return wsiInternalError_('get_item_by_id', error);
   }
 }
 
-/**
- * Elimina un registro de item (uso excepcional)
- * 
- * @param {string} item_id - ID del item a eliminar
- * @returns {Object} Respuesta con éxito o error
- */
-function delete_session_item(item_id) {
+function list_items_by_session(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSION_ITEMS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const itemIdIndex = headers.indexOf("item_id");
-    
-    // Buscar y eliminar el item
-    for (let i = data.length - 1; i >= 1; i--) {
-      if (data[i][itemIdIndex] === item_id) {
-        sheet.deleteRow(i + 1);
-        return success_response({ 
-          item_id: item_id,
-          deleted: true
-        });
+    const payload = wsiAsObjectOrNull_(params) || { session_id: params };
+    const sessionId = payload ? payload.session_id : null;
+    if (!sessionId) {
+      return wsiBadRequest_('session_id is required');
+    }
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rows = wsiReadAllRowsAsObjects_(sheet);
+    const filtered = rows.filter(function (row) {
+      return wsiSameValue_(row.session_id, sessionId);
+    });
+
+    return success_response(filtered);
+  } catch (error) {
+    return wsiInternalError_('list_items_by_session', error);
+  }
+}
+
+function list_items_by_user_and_date(params) {
+  try {
+    const payload = wsiAsObjectOrNull_(params) || {
+      user_id: params,
+      session_date: arguments.length >= 2 ? arguments[1] : null,
+    };
+    if (!payload) {
+      return wsiBadRequest_('params must be an object');
+    }
+
+    if (payload.user_id == null || !payload.session_date) {
+      return wsiBadRequest_('user_id and session_date are required');
+    }
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rows = wsiReadAllRowsAsObjects_(sheet);
+    const filtered = rows.filter(function (row) {
+      return (
+        wsiSameValue_(row.user_id, payload.user_id) &&
+        wsiSameValue_(row.session_date, payload.session_date)
+      );
+    });
+
+    return success_response(filtered);
+  } catch (error) {
+    return wsiInternalError_('list_items_by_user_and_date', error);
+  }
+}
+
+function get_item_by_session_and_initiative(params) {
+  try {
+    const payload = wsiAsObjectOrNull_(params) || {
+      session_id: params,
+      initiative_id: arguments.length >= 2 ? arguments[1] : null,
+    };
+    if (!payload) {
+      return wsiBadRequest_('params must be an object');
+    }
+
+    if (!payload.session_id || !payload.initiative_id) {
+      return wsiBadRequest_('session_id and initiative_id are required');
+    }
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rows = wsiReadAllRowsAsObjects_(sheet);
+
+    for (let i = 0; i < rows.length; i += 1) {
+      if (
+        wsiSameValue_(rows[i].session_id, payload.session_id) &&
+        wsiSameValue_(rows[i].initiative_id, payload.initiative_id)
+      ) {
+        return success_response(rows[i]);
       }
     }
-    
-    return error_response("ITEM_NOT_FOUND", "Session item not found", { item_id: item_id });
+
+    return success_response(null);
   } catch (error) {
-    Logger.log(`Error in delete_session_item: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return wsiInternalError_('get_item_by_session_and_initiative', error);
   }
+}
+
+function update_item(params) {
+  try {
+    const payload = wsiAsObjectOrNull_(params) || {
+      item_id: params,
+      patch: arguments.length >= 2 ? arguments[1] : null,
+    };
+    if (!payload) {
+      return wsiBadRequest_('params must be an object');
+    }
+
+    const itemId = payload.item_id;
+    const patch = wsiAsObjectOrNull_(payload.patch);
+    if (!itemId) {
+      return wsiBadRequest_('item_id is required');
+    }
+    if (!patch) {
+      return wsiBadRequest_('patch must be an object');
+    }
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rowIndex = wsiFindRowByValue_(sheet, 'item_id', itemId);
+    if (rowIndex === -1) {
+      return wsiNotFound_('Item not found', { item_id: itemId });
+    }
+
+    wsiUpdateRow_(sheet, rowIndex, patch);
+    return success_response(wsiReadRowAsObject_(sheet, rowIndex));
+  } catch (error) {
+    return wsiInternalError_('update_item', error);
+  }
+}
+
+function delete_item(params) {
+  try {
+    const payload = wsiAsObjectOrNull_(params) || { item_id: params };
+    const itemId = payload ? payload.item_id : null;
+    if (!itemId) {
+      return wsiBadRequest_('item_id is required');
+    }
+
+    const sheet = wsiGetSheet_(WORK_SESSION_ITEMS_SHEET_NAME);
+    const rowIndex = wsiFindRowByValue_(sheet, 'item_id', itemId);
+    if (rowIndex === -1) {
+      return wsiNotFound_('Item not found', { item_id: itemId });
+    }
+
+    sheet.deleteRow(rowIndex);
+    return success_response({ item_id: itemId, deleted: true });
+  } catch (error) {
+    return wsiInternalError_('delete_item', error);
+  }
+}
+
+function upsert_session_item(session_id, initiative_id, deltaTasks, patchData) {
+  try {
+    const existingResult = get_item_by_session_and_initiative({
+      session_id: session_id,
+      initiative_id: initiative_id,
+    });
+
+    if (!existingResult.ok) {
+      return existingResult;
+    }
+
+    const existing = existingResult.data;
+    const patch = wsiAsObjectOrNull_(patchData) || {};
+    const delta = Number(deltaTasks);
+    const safeDelta = Number.isFinite(delta) ? delta : undefined;
+
+    if (existing && existing.item_id) {
+      const updatePatch = Object.assign({}, patch);
+      if (safeDelta !== undefined && !Object.prototype.hasOwnProperty.call(updatePatch, 'tasks_done_count')) {
+        updatePatch.tasks_done_count = safeDelta;
+      }
+      return update_item({
+        item_id: existing.item_id,
+        patch: updatePatch,
+      });
+    }
+
+    const createPayload = Object.assign({}, patch, {
+      item_id: patch.item_id || wsiGenerateId_(),
+      session_id: session_id,
+      initiative_id: initiative_id,
+    });
+    if (safeDelta !== undefined && !Object.prototype.hasOwnProperty.call(createPayload, 'tasks_done_count')) {
+      createPayload.tasks_done_count = safeDelta;
+    }
+    return create_item(createPayload);
+  } catch (error) {
+    return wsiInternalError_('upsert_session_item', error);
+  }
+}
+
+function update_session_item(item_id, patch_data, updated_by) {
+  const patch = wsiAsObjectOrNull_(patch_data) || {};
+  if (updated_by != null && !Object.prototype.hasOwnProperty.call(patch, 'updated_by')) {
+    patch.updated_by = updated_by;
+  }
+  return update_item({
+    item_id: item_id,
+    patch: patch,
+  });
+}
+
+function delete_session_item(item_id) {
+  return delete_item({ item_id: item_id });
+}
+
+function wsiGetSheet_(sheetName) {
+  if (typeof getSheet_ === 'function') {
+    return getSheet_(sheetName);
+  }
+  if (typeof get_sheet_by_name === 'function') {
+    return get_sheet_by_name(sheetName);
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) {
+    throw new Error(`Sheet "${sheetName}" not found`);
+  }
+  return sheet;
+}
+
+function wsiNowStr_() {
+  if (typeof nowStr_ === 'function') {
+    return nowStr_();
+  }
+  const timeZone = Session.getScriptTimeZone() || 'America/Argentina/Buenos_Aires';
+  return Utilities.formatDate(new Date(), timeZone, 'dd/MM/yyyy HH:mm');
+}
+
+function wsiGenerateId_() {
+  if (typeof generateId_ === 'function') {
+    return generateId_();
+  }
+  return Utilities.getUuid();
+}
+
+function wsiFindRowByValue_(sheet, headerName, value) {
+  if (typeof findRowByValue_ === 'function') {
+    return findRowByValue_(sheet, headerName, value);
+  }
+
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 2 || lastColumn < 1) {
+    return -1;
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const headerIndex = headers.indexOf(headerName);
+  if (headerIndex === -1) {
+    return -1;
+  }
+
+  const values = sheet.getRange(2, headerIndex + 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < values.length; i += 1) {
+    if (wsiSameValue_(values[i][0], value)) {
+      return i + 2;
+    }
+  }
+
+  return -1;
+}
+
+function wsiReadRowAsObject_(sheet, rowIndex) {
+  if (typeof readRowAsObject_ === 'function') {
+    return readRowAsObject_(sheet, rowIndex);
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  if (rowIndex < 2 || rowIndex > sheet.getLastRow() || lastColumn < 1) {
+    return null;
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const row = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+  const obj = {};
+  for (let i = 0; i < headers.length; i += 1) {
+    obj[headers[i]] = row[i];
+  }
+  return obj;
+}
+
+function wsiUpdateRow_(sheet, rowIndex, patchObj) {
+  if (typeof updateRow_ === 'function') {
+    updateRow_(sheet, rowIndex, patchObj);
+    return;
+  }
+
+  if (!patchObj || typeof patchObj !== 'object') {
+    return;
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const row = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+  const keys = Object.keys(patchObj);
+
+  for (let i = 0; i < keys.length; i += 1) {
+    const index = headers.indexOf(keys[i]);
+    if (index === -1) {
+      continue;
+    }
+    row[index] = patchObj[keys[i]];
+  }
+
+  sheet.getRange(rowIndex, 1, 1, lastColumn).setValues([row]);
+}
+
+function wsiReadAllRowsAsObjects_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 2 || lastColumn < 1) {
+    return [];
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const rows = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+  const result = [];
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const obj = {};
+    for (let j = 0; j < headers.length; j += 1) {
+      obj[headers[j]] = rows[i][j];
+    }
+    result.push(obj);
+  }
+
+  return result;
+}
+
+function wsiAsObjectOrNull_(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+}
+
+function wsiSameValue_(left, right) {
+  if (left === right) {
+    return true;
+  }
+  if (left == null || right == null) {
+    return false;
+  }
+
+  const leftText = String(left).trim();
+  const rightText = String(right).trim();
+  if (leftText === rightText) {
+    return true;
+  }
+
+  const leftNumber = Number(leftText);
+  const rightNumber = Number(rightText);
+  if (
+    leftText !== '' &&
+    rightText !== '' &&
+    Number.isFinite(leftNumber) &&
+    Number.isFinite(rightNumber)
+  ) {
+    return leftNumber === rightNumber;
+  }
+
+  return false;
+}
+
+function wsiBadRequest_(message, details) {
+  return error_response('BAD_REQUEST', message, details || {});
+}
+
+function wsiNotFound_(message, details) {
+  return error_response('NOT_FOUND', message, details || {});
+}
+
+function wsiInternalError_(context, error) {
+  Logger.log(`${context} error: ${error && error.message ? error.message : error}`);
+  return error_response(
+    'INTERNAL_ERROR',
+    error && error.message ? error.message : 'Unexpected error',
+    { context: context },
+  );
 }

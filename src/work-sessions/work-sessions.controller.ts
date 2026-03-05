@@ -1,85 +1,91 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
-  HttpCode,
-  HttpStatus,
   Param,
   Patch,
   Post,
   Query,
-  Res,
 } from '@nestjs/common';
-import { Response } from 'express';
-import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { CreateItemDto } from './dto/create-item.dto';
+import { CreateSessionDto } from './dto/create-session.dto';
+import { UpdateItemDto } from './dto/update-item.dto';
+import { UpdateSessionDto } from './dto/update-session.dto';
 import { WorkSessionsService } from './work-sessions.service';
-import { CreateWorkSessionDto } from './dto/create-work-session.dto';
-import { GenerateDailyWorkSessionsDto } from './dto/generate-daily-work-sessions.dto';
-import { ListWorkSessionsQueryDto } from './dto/list-work-sessions-query.dto';
-import { PatchSessionItemDto } from './dto/patch-session-item.dto';
-import { UpsertSessionItemDto } from './dto/upsert-session-item.dto';
 
-@Controller('work_sessions')
+@Controller()
 export class WorkSessionsController {
   constructor(private readonly workSessionsService: WorkSessionsService) {}
 
-  @Roles('ADMIN', 'LEADER')
-  @Post()
-  async create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateWorkSessionDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.workSessionsService.createSession(user, dto);
-    res.status(result.created ? HttpStatus.CREATED : HttpStatus.OK);
-    return result.session;
+  @Get('work-sessions/by-user-date')
+  getByUserDate(@CurrentUser() actor: AuthUser, @Query() query: CreateSessionDto) {
+    return this.workSessionsService.getSessionByUserAndDate(actor, query);
   }
 
-  @Roles('ADMIN', 'LEADER')
-  @HttpCode(HttpStatus.OK)
-  @Post('generate_daily')
-  generateDaily(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: GenerateDailyWorkSessionsDto,
-  ) {
-    return this.workSessionsService.generateDaily(user, dto);
+  @Post('work-sessions/ensure')
+  ensure(@CurrentUser() actor: AuthUser, @Body() dto: CreateSessionDto) {
+    return this.workSessionsService.ensureSession(actor, dto);
   }
 
-  @Post(':sessionId/items')
-  upsertItem(
-    @CurrentUser() user: AuthUser,
-    @Param('sessionId') sessionId: string,
-    @Body() dto: UpsertSessionItemDto,
+  @Patch('work-sessions/:session_id')
+  patchSession(
+    @CurrentUser() actor: AuthUser,
+    @Param('session_id') sessionId: string,
+    @Body() dto: UpdateSessionDto,
   ) {
-    return this.workSessionsService.upsertItem(user, sessionId, dto);
+    return this.workSessionsService.updateSession(actor, sessionId, dto);
   }
 
-  @Roles('ADMIN')
-  @Patch(':sessionId/items/:itemId')
-  patchItem(
-    @CurrentUser() user: AuthUser,
-    @Param('sessionId') sessionId: string,
-    @Param('itemId') itemId: string,
-    @Body() dto: PatchSessionItemDto,
-  ) {
-    return this.workSessionsService.patchItem(user, sessionId, itemId, dto);
-  }
-
-  @Post(':sessionId/close')
+  @Post('work-sessions/:session_id/close')
   closeSession(
-    @CurrentUser() user: AuthUser,
-    @Param('sessionId') sessionId: string,
+    @CurrentUser() actor: AuthUser,
+    @Param('session_id') sessionId: string,
   ) {
-    return this.workSessionsService.closeSession(user, sessionId);
+    return this.workSessionsService.closeSession(actor, sessionId);
   }
 
-  @Get()
-  list(
-    @CurrentUser() user: AuthUser,
-    @Query() query: ListWorkSessionsQueryDto,
+  @Post('work-sessions/:session_id/reopen')
+  reopenSession(
+    @CurrentUser() actor: AuthUser,
+    @Param('session_id') sessionId: string,
   ) {
-    return this.workSessionsService.listSessions(user, query);
+    return this.workSessionsService.reopenSession(actor, sessionId);
+  }
+
+  @Get('work-sessions/:session_id/items')
+  listItems(
+    @CurrentUser() actor: AuthUser,
+    @Param('session_id') sessionId: string,
+  ) {
+    return this.workSessionsService.listItemsBySession(actor, sessionId);
+  }
+
+  @Post('work-sessions/:session_id/items')
+  createItem(
+    @CurrentUser() actor: AuthUser,
+    @Param('session_id') sessionId: string,
+    @Body() dto: CreateItemDto,
+  ) {
+    return this.workSessionsService.createItem(actor, sessionId, dto);
+  }
+
+  @Patch('work-session-items/:item_id')
+  patchItem(
+    @CurrentUser() actor: AuthUser,
+    @Param('item_id') itemId: string,
+    @Body() dto: UpdateItemDto,
+  ) {
+    return this.workSessionsService.updateItem(actor, itemId, dto);
+  }
+
+  @Delete('work-session-items/:item_id')
+  deleteItem(
+    @CurrentUser() actor: AuthUser,
+    @Param('item_id') itemId: string,
+  ) {
+    return this.workSessionsService.deleteItem(actor, itemId);
   }
 }

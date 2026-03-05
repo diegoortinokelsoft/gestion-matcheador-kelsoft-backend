@@ -13,18 +13,27 @@ function doPost(e) {
       return buildResponse({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Invalid key' } });
     }
 
-    const functionName = body.function;
-    const parameters = body.parameters || [];
+    const actionName = body.action || body.function;
+    const paramsPayload = body.params;
+    let parameters = [];
+
+    if (Array.isArray(body.parameters)) {
+      parameters = body.parameters;
+    } else if (Array.isArray(paramsPayload)) {
+      parameters = paramsPayload;
+    } else if (paramsPayload != null) {
+      parameters = [paramsPayload];
+    }
 
     // Verificar que la función existe
-    if (!functionName) {
-      return buildResponse({ ok: false, error: { code: 'BAD_REQUEST', message: 'Function name required' } });
+    if (!actionName) {
+      return buildResponse({ ok: false, error: { code: 'BAD_REQUEST', message: 'Action name required' } });
     }
 
     // Llamar a la función dinámicamente
-    const fn = this[functionName];
+    const fn = this[actionName];
     if (typeof fn !== 'function') {
-      return buildResponse({ ok: false, error: { code: 'NOT_FOUND', message: `Function ${functionName} not found` } });
+      return buildResponse({ ok: false, error: { code: 'NOT_FOUND', message: `Function ${actionName} not found` } });
     }
 
     const result = fn(...parameters);

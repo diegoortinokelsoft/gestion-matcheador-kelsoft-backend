@@ -32,15 +32,24 @@ function doPost(e) {
     
     // Parsear el body de la petición
     const requestBody = JSON.parse(e.postData.contents);
-    const functionName = requestBody.function;
-    const parameters = requestBody.parameters || [];
+    const actionName = requestBody.action || requestBody.function;
+    const paramsPayload = requestBody.params && typeof requestBody.params === 'object'
+      ? requestBody.params
+      : null;
+    const parameters = Array.isArray(requestBody.parameters) ? requestBody.parameters : [];
+
+    if (!actionName) {
+      return ContentService
+        .createTextOutput(JSON.stringify(error_response('BAD_REQUEST', 'Action name required')))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     
-    Logger.log(`Executing function: ${functionName} with ${parameters.length} parameters`);
+    Logger.log(`Executing action: ${actionName} with ${parameters.length} legacy parameters`);
     
     // Ejecutar la función solicitada
     let result;
     
-    switch(functionName) {
+    switch(actionName) {
       // ========================================
       // USERS
       // ========================================
@@ -220,53 +229,91 @@ function doPost(e) {
       // WORK SESSIONS
       // ========================================
       case 'create_session':
-        result = create_session(parameters[0], parameters[1]);
+        result = create_session(paramsPayload || parameters[0]);
         break;
       case 'get_session_by_id':
-        result = get_session_by_id(parameters[0]);
+        result = get_session_by_id(paramsPayload || parameters[0]);
+        break;
+      case 'get_session_by_user_and_date':
+        result = get_session_by_user_and_date(paramsPayload || parameters[0]);
         break;
       case 'get_open_session_by_user_and_date':
-        result = get_open_session_by_user_and_date(parameters[0], parameters[1]);
+        result = get_session_by_user_and_date(
+          paramsPayload || {
+            user_id: parameters[0],
+            session_date: parameters[1],
+          },
+        );
         break;
       case 'list_sessions':
-        result = list_sessions(parameters[0]);
+        result = list_sessions(paramsPayload || parameters[0]);
         break;
       case 'update_session':
-        result = update_session(parameters[0], parameters[1], parameters[2]);
+        result = update_session(paramsPayload || parameters[0]);
+        break;
+      case 'delete_session':
+        result = delete_session(paramsPayload || parameters[0]);
         break;
       case 'close_session':
-        result = close_session(parameters[0], parameters[1]);
+        result = update_session(
+          paramsPayload || {
+            session_id: parameters[0],
+            patch: parameters[1],
+          },
+        );
         break;
         
       // ========================================
       // WORK SESSION ITEMS
       // ========================================
+      case 'create_item':
+        result = create_item(paramsPayload || parameters[0]);
+        break;
+      case 'get_item_by_id':
+        result = get_item_by_id(paramsPayload || parameters[0]);
+        break;
+      case 'get_item_by_session_and_initiative':
+        result = get_item_by_session_and_initiative(paramsPayload || parameters[0]);
+        break;
       case 'upsert_session_item':
         result = upsert_session_item(parameters[0], parameters[1], parameters[2], parameters[3]);
         break;
       case 'list_items_by_session':
-        result = list_items_by_session(parameters[0]);
+        result = list_items_by_session(
+          paramsPayload || (typeof parameters[0] === 'object' ? parameters[0] : { session_id: parameters[0] }),
+        );
         break;
       case 'list_items_by_user_and_date':
-        result = list_items_by_user_and_date(parameters[0], parameters[1]);
+        result = list_items_by_user_and_date(
+          paramsPayload || {
+            user_id: parameters[0],
+            session_date: parameters[1],
+          },
+        );
+        break;
+      case 'update_item':
+        result = update_item(paramsPayload || parameters[0]);
         break;
       case 'update_session_item':
         result = update_session_item(parameters[0], parameters[1], parameters[2]);
+        break;
+      case 'delete_item':
+        result = delete_item(paramsPayload || parameters[0]);
         break;
       case 'delete_session_item':
         result = delete_session_item(parameters[0]);
         break;
         
       default:
-        Logger.log(`Function not found: ${functionName}`);
-        result = error_response('FUNCTION_NOT_FOUND', `Function ${functionName} not found`);
+        Logger.log(`Action not found: ${actionName}`);
+        result = error_response('FUNCTION_NOT_FOUND', `Function ${actionName} not found`);
     }
     
     // Log de éxito
     if (result.ok) {
-      Logger.log(`Function ${functionName} executed successfully`);
+      Logger.log(`Action ${actionName} executed successfully`);
     } else {
-      Logger.log(`Function ${functionName} returned error: ${JSON.stringify(result.error)}`);
+      Logger.log(`Action ${actionName} returned error: ${JSON.stringify(result.error)}`);
     }
     
     // Retornar el resultado

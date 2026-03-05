@@ -1,329 +1,425 @@
 /**
  * work_sessions.gs
- * API de Apps Script para la entidad Jornadas de Trabajo
- * 
- * Esquema de la hoja work_sessions:
- * - session_id (string)
- * - user_id (number)
- * - user_name (string)
- * - user_team (string)
- * - user_leader (string)
- * - session_date (date object - dd/mm/aaaa)
- * - session_start_at (string - dd/mm/aaaa)
- * - session_end_at (string - dd/mm/aaaa)
- * - session_status (string: OPEN, CLOSED, CANCELLED)
- * - total_tasks_done (number - valor derivado)
- * - total_initiatives_count (number - valor derivado)
- * - goal_mode (string: PER_INITIATIVE, SESSION_TOTAL)
- * - goal_target_total (number)
- * - goal_is_met (boolean - valor derivado)
- * - created_at (string - dd/mm/aaaa)
- * - updated_at (string - dd/mm/aaaa)
- * - updated_by (number)
- * - version (number)
+ * Data access for work_sessions.
+ *
+ * Rules:
+ * - No business logic
+ * - Last write wins
+ * - No version checks
+ * - update_* only overwrites existing columns
  */
 
-const WORK_SESSIONS_SHEET_NAME = "work_sessions";
+const WORK_SESSIONS_SHEET_NAME = 'work_sessions';
 
-/**
- * Crea una nueva jornada de trabajo en estado OPEN
- * 
- * @param {number} user_id - ID del usuario
- * @param {Object} session_data - Datos de la jornada
- * @returns {Object} Respuesta con el session_id creado o error
- */
-function create_session(user_id, session_data) {
-  try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    
-    // Generar un session_id único
-    const session_id = generate_unique_id("SESS");
-    const now = format_date(new Date());
-    
-    // Preparar la nueva fila
-    const newRow = [];
-    headers.forEach(header => {
-      if (header === "session_id") {
-        newRow.push(session_id);
-      } else if (header === "user_id") {
-        newRow.push(user_id);
-      } else if (header === "session_status") {
-        newRow.push("OPEN");
-      } else if (header === "session_start_at") {
-        newRow.push(session_data.session_start_at || now);
-      } else if (header === "session_date") {
-        newRow.push(session_data.session_date || now);
-      } else if (header === "created_at") {
-        newRow.push(now);
-      } else if (header === "updated_at") {
-        newRow.push(now);
-      } else if (header === "version") {
-        newRow.push(1);
-      } else if (header === "total_tasks_done") {
-        newRow.push(0);
-      } else if (header === "total_initiatives_count") {
-        newRow.push(0);
-      } else if (header === "goal_is_met") {
-        newRow.push(false);
-      } else {
-        newRow.push(session_data[header] || "");
-      }
-    });
-    
-    // Agregar la fila
-    sheet.appendRow(newRow);
-    
-    return success_response({ session_id: session_id });
-  } catch (error) {
-    Logger.log(`Error in create_session: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+function getSheet_(sheetName) {
+  if (typeof get_sheet_by_name === 'function') {
+    return get_sheet_by_name(sheetName);
   }
+
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) {
+    throw new Error(`Sheet "${sheetName}" not found`);
+  }
+  return sheet;
 }
 
-/**
- * Obtiene una jornada por su ID
- * 
- * @param {string} session_id - ID de la jornada
- * @returns {Object} Respuesta con la jornada o error
- */
-function get_session_by_id(session_id) {
-  try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const sessionIdIndex = headers.indexOf("session_id");
-    
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][sessionIdIndex] === session_id) {
-        const session = {};
-        headers.forEach((header, index) => {
-          session[header] = data[i][index];
-        });
-        return success_response(session);
-      }
+function nowStr_() {
+  const timeZone = Session.getScriptTimeZone() || 'America/Argentina/Buenos_Aires';
+  return Utilities.formatDate(new Date(), timeZone, 'dd/MM/yyyy HH:mm');
+}
+
+function generateId_() {
+  if (typeof Utilities !== 'undefined' && Utilities.getUuid) {
+    return Utilities.getUuid();
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (char) {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function findRowByValue_(sheet, headerName, value) {
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 2 || lastColumn < 1) {
+    return -1;
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const headerIndex = headers.indexOf(headerName);
+  if (headerIndex === -1) {
+    return -1;
+  }
+
+  const columnValues = sheet.getRange(2, headerIndex + 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < columnValues.length; i += 1) {
+    if (sameValue_(columnValues[i][0], value)) {
+      return i + 2;
     }
-    
-    return error_response("SESSION_NOT_FOUND", "Session not found", { session_id: session_id });
-  } catch (error) {
-    Logger.log(`Error in get_session_by_id: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
   }
+
+  return -1;
 }
 
-/**
- * Obtiene la jornada abierta de un usuario en una fecha específica
- * 
- * @param {number} user_id - ID del usuario
- * @param {string} session_date - Fecha en formato dd/mm/aaaa
- * @returns {Object} Respuesta con la jornada o error si no existe
- */
-function get_open_session_by_user_and_date(user_id, session_date) {
-  try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const userIdIndex = headers.indexOf("user_id");
-    const sessionDateIndex = headers.indexOf("session_date");
-    const sessionStatusIndex = headers.indexOf("session_status");
-    
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][userIdIndex] === user_id && 
-          data[i][sessionDateIndex] === session_date &&
-          data[i][sessionStatusIndex] === "OPEN") {
-        const session = {};
-        headers.forEach((header, index) => {
-          session[header] = data[i][index];
-        });
-        return success_response(session);
-      }
+function readRowAsObject_(sheet, rowIndex) {
+  const lastColumn = sheet.getLastColumn();
+  if (rowIndex < 2 || rowIndex > sheet.getLastRow() || lastColumn < 1) {
+    return null;
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const row = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+  const record = {};
+
+  for (let i = 0; i < headers.length; i += 1) {
+    record[headers[i]] = row[i];
+  }
+
+  return record;
+}
+
+function updateRow_(sheet, rowIndex, patchObj) {
+  if (!patchObj || typeof patchObj !== 'object') {
+    return;
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  if (rowIndex < 2 || rowIndex > sheet.getLastRow() || lastColumn < 1) {
+    return;
+  }
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const row = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+  const patchKeys = Object.keys(patchObj);
+
+  for (let i = 0; i < patchKeys.length; i += 1) {
+    const key = patchKeys[i];
+    const headerIndex = headers.indexOf(key);
+    if (headerIndex === -1) {
+      continue;
     }
-    
-    return error_response("SESSION_NOT_FOUND", "No open session found for user and date", { 
-      user_id: user_id,
-      session_date: session_date
-    });
-  } catch (error) {
-    Logger.log(`Error in get_open_session_by_user_and_date: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    row[headerIndex] = patchObj[key];
   }
+
+  sheet.getRange(rowIndex, 1, 1, lastColumn).setValues([row]);
 }
 
-/**
- * Lista jornadas con filtros opcionales
- * 
- * @param {Object} filters - Filtros opcionales (user_id, session_date, user_team, user_leader, session_status)
- * @returns {Object} Respuesta con array de jornadas o error
- */
-function list_sessions(filters = {}) {
+function create_session(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const sessions = [];
-    
-    for (let i = 1; i < data.length; i++) {
-      const session = {};
-      headers.forEach((header, index) => {
-        session[header] = data[i][index];
+    let payload = asObjectOrNull_(params);
+    if (!payload && arguments.length >= 2) {
+      const legacyUserId = params;
+      const legacyData = asObjectOrNull_(arguments[1]) || {};
+      payload = Object.assign({}, legacyData, {
+        user_id: Object.prototype.hasOwnProperty.call(legacyData, 'user_id')
+          ? legacyData.user_id
+          : legacyUserId,
       });
-      
-      // Aplicar filtros
-      let matchesFilters = true;
-      
-      if (filters.user_id && session.user_id !== filters.user_id) {
-        matchesFilters = false;
+    }
+    if (!payload) {
+      return badRequest_('params must be an object');
+    }
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const lastColumn = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const createdAt = payload.created_at || nowStr_();
+
+    const row = headers.map(function (header) {
+      if (Object.prototype.hasOwnProperty.call(payload, header)) {
+        return payload[header];
       }
-      
-      if (filters.session_date && session.session_date !== filters.session_date) {
-        matchesFilters = false;
+      if (header === 'session_id') {
+        return generateId_();
       }
-      
-      if (filters.user_team && session.user_team !== filters.user_team) {
-        matchesFilters = false;
+      if (header === 'session_status') {
+        return 'DRAFT';
       }
-      
-      if (filters.user_leader && session.user_leader !== filters.user_leader) {
-        matchesFilters = false;
+      if (header === 'created_at') {
+        return createdAt;
       }
-      
-      if (filters.session_status && session.session_status !== filters.session_status) {
-        matchesFilters = false;
+      if (header === 'updated_at') {
+        return payload.updated_at || createdAt;
       }
-      
-      if (matchesFilters) {
-        sessions.push(session);
+      return '';
+    });
+
+    sheet.appendRow(row);
+    const createdRowIndex = sheet.getLastRow();
+    return success_response(readRowAsObject_(sheet, createdRowIndex));
+  } catch (error) {
+    return internalError_('create_session', error);
+  }
+}
+
+function get_session_by_id(params) {
+  try {
+    const payload = asObjectOrNull_(params) || { session_id: params };
+    const sessionId = payload ? payload.session_id : null;
+    if (!sessionId) {
+      return badRequest_('session_id is required');
+    }
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const rowIndex = findRowByValue_(sheet, 'session_id', sessionId);
+    if (rowIndex === -1) {
+      return success_response(null);
+    }
+
+    return success_response(readRowAsObject_(sheet, rowIndex));
+  } catch (error) {
+    return internalError_('get_session_by_id', error);
+  }
+}
+
+function get_session_by_user_and_date(params) {
+  try {
+    const payload = asObjectOrNull_(params) || {
+      user_id: params,
+      session_date: arguments.length >= 2 ? arguments[1] : null,
+    };
+    if (!payload) {
+      return badRequest_('params must be an object');
+    }
+
+    if (payload.user_id == null || !payload.session_date) {
+      return badRequest_('user_id and session_date are required');
+    }
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow < 2 || lastColumn < 1) {
+      return success_response(null);
+    }
+
+    const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const rows = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+    const userIdIndex = headers.indexOf('user_id');
+    const dateIndex = headers.indexOf('session_date');
+
+    if (userIdIndex === -1 || dateIndex === -1) {
+      return success_response(null);
+    }
+
+    for (let i = 0; i < rows.length; i += 1) {
+      if (sameValue_(rows[i][userIdIndex], payload.user_id) && sameValue_(rows[i][dateIndex], payload.session_date)) {
+        return success_response(readRowAsObject_(sheet, i + 2));
       }
     }
-    
+
+    return success_response(null);
+  } catch (error) {
+    return internalError_('get_session_by_user_and_date', error);
+  }
+}
+
+function list_sessions(params) {
+  try {
+    const payload = asObjectOrNull_(params);
+    const filters = payload && payload.filters && typeof payload.filters === 'object'
+      ? payload.filters
+      : payload || {};
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow < 2 || lastColumn < 1) {
+      return success_response([]);
+    }
+
+    const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const rows = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+    const sessions = [];
+    const dateFrom = parseDdMmYyyy_(filters.date_from);
+    const dateTo = parseDdMmYyyy_(filters.date_to);
+    const teamFilter = filters.team != null ? filters.team : filters.user_team;
+    const statusFilter = filters.status != null ? filters.status : filters.session_status;
+    const exactDateFilter = filters.session_date;
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const rowObj = {};
+      for (let j = 0; j < headers.length; j += 1) {
+        rowObj[headers[j]] = rows[i][j];
+      }
+
+      if (filters.user_id != null && !sameValue_(rowObj.user_id, filters.user_id)) {
+        continue;
+      }
+      if (teamFilter != null && !sameValue_(rowObj.user_team, teamFilter)) {
+        continue;
+      }
+      if (statusFilter != null && !sameValue_(rowObj.session_status, statusFilter)) {
+        continue;
+      }
+      if (exactDateFilter != null && !sameValue_(rowObj.session_date, exactDateFilter)) {
+        continue;
+      }
+
+      if (dateFrom || dateTo) {
+        const sessionDate = parseDdMmYyyy_(rowObj.session_date);
+        if (!sessionDate) {
+          continue;
+        }
+        if (dateFrom && sessionDate < dateFrom) {
+          continue;
+        }
+        if (dateTo && sessionDate > dateTo) {
+          continue;
+        }
+      }
+
+      sessions.push(rowObj);
+    }
+
     return success_response(sessions);
   } catch (error) {
-    Logger.log(`Error in list_sessions: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return internalError_('list_sessions', error);
   }
 }
 
-/**
- * Actualiza campos específicos de una jornada
- * 
- * @param {string} session_id - ID de la jornada
- * @param {Object} patch_data - Campos a actualizar
- * @param {number} updated_by - ID del usuario que realiza la actualización
- * @returns {Object} Respuesta con éxito o error
- */
-function update_session(session_id, patch_data, updated_by) {
+function update_session(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const sessionIdIndex = headers.indexOf("session_id");
-    const versionIndex = headers.indexOf("version");
-    const updatedAtIndex = headers.indexOf("updated_at");
-    const updatedByIndex = headers.indexOf("updated_by");
-    
-    // Buscar la jornada
-    let rowIndex = -1;
-    let currentVersion = 0;
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][sessionIdIndex] === session_id) {
-        rowIndex = i + 1;
-        currentVersion = data[i][versionIndex];
-        break;
-      }
+    const payload = asObjectOrNull_(params) || {
+      session_id: params,
+      patch: arguments.length >= 2 ? arguments[1] : null,
+    };
+    if (!payload) {
+      return badRequest_('params must be an object');
     }
-    
+
+    const sessionId = payload.session_id;
+    const patch = asObjectOrNull_(payload.patch);
+    if (!sessionId) {
+      return badRequest_('session_id is required');
+    }
+    if (!patch) {
+      return badRequest_('patch must be an object');
+    }
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const rowIndex = findRowByValue_(sheet, 'session_id', sessionId);
     if (rowIndex === -1) {
-      return error_response("SESSION_NOT_FOUND", "Session not found", { session_id: session_id });
+      return notFound_('Session not found', { session_id: sessionId });
     }
-    
-    // Actualizar los campos
-    headers.forEach((header, index) => {
-      if (patch_data.hasOwnProperty(header) && header !== "session_id" && header !== "version") {
-        sheet.getRange(rowIndex, index + 1).setValue(patch_data[header]);
-      }
-    });
-    
-    // Incrementar versión
-    sheet.getRange(rowIndex, versionIndex + 1).setValue(currentVersion + 1);
-    
-    // Actualizar metadatos
-    sheet.getRange(rowIndex, updatedAtIndex + 1).setValue(format_date(new Date()));
-    sheet.getRange(rowIndex, updatedByIndex + 1).setValue(updated_by);
-    
-    return success_response({ 
-      session_id: session_id, 
-      updated: true,
-      version: currentVersion + 1
-    });
+
+    updateRow_(sheet, rowIndex, patch);
+    return success_response(readRowAsObject_(sheet, rowIndex));
   } catch (error) {
-    Logger.log(`Error in update_session: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return internalError_('update_session', error);
   }
 }
 
-/**
- * Cierra una jornada y actualiza los valores derivados
- * 
- * @param {string} session_id - ID de la jornada
- * @param {Object} close_data - Datos de cierre (valores derivados calculados por el backend)
- * @returns {Object} Respuesta con éxito o error
- */
-function close_session(session_id, close_data) {
+function delete_session(params) {
   try {
-    const sheet = get_sheet_by_name(WORK_SESSIONS_SHEET_NAME);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const sessionIdIndex = headers.indexOf("session_id");
-    const statusIndex = headers.indexOf("session_status");
-    const versionIndex = headers.indexOf("version");
-    const updatedAtIndex = headers.indexOf("updated_at");
-    const updatedByIndex = headers.indexOf("updated_by");
-    
-    // Buscar la jornada
-    let rowIndex = -1;
-    let currentVersion = 0;
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][sessionIdIndex] === session_id) {
-        rowIndex = i + 1;
-        currentVersion = data[i][versionIndex];
-        break;
-      }
+    const payload = asObjectOrNull_(params) || { session_id: params };
+    const sessionId = payload ? payload.session_id : null;
+    if (!sessionId) {
+      return badRequest_('session_id is required');
     }
-    
+
+    const sheet = getSheet_(WORK_SESSIONS_SHEET_NAME);
+    const rowIndex = findRowByValue_(sheet, 'session_id', sessionId);
     if (rowIndex === -1) {
-      return error_response("SESSION_NOT_FOUND", "Session not found", { session_id: session_id });
+      return notFound_('Session not found', { session_id: sessionId });
     }
-    
-    // Actualizar estado a CLOSED
-    sheet.getRange(rowIndex, statusIndex + 1).setValue("CLOSED");
-    
-    // Actualizar fecha de cierre
-    const endAtIndex = headers.indexOf("session_end_at");
-    sheet.getRange(rowIndex, endAtIndex + 1).setValue(format_date(new Date()));
-    
-    // Actualizar valores derivados
-    headers.forEach((header, index) => {
-      if (close_data.hasOwnProperty(header) && header !== "session_id" && header !== "version") {
-        sheet.getRange(rowIndex, index + 1).setValue(close_data[header]);
-      }
-    });
-    
-    // Incrementar versión
-    sheet.getRange(rowIndex, versionIndex + 1).setValue(currentVersion + 1);
-    
-    // Actualizar metadatos
-    sheet.getRange(rowIndex, updatedAtIndex + 1).setValue(format_date(new Date()));
-    if (close_data.updated_by) {
-      sheet.getRange(rowIndex, updatedByIndex + 1).setValue(close_data.updated_by);
-    }
-    
-    return success_response({ 
-      session_id: session_id, 
-      closed: true,
-      version: currentVersion + 1
-    });
+
+    sheet.deleteRow(rowIndex);
+    return success_response({ session_id: sessionId, deleted: true });
   } catch (error) {
-    Logger.log(`Error in close_session: ${error.message}`);
-    return error_response("INTERNAL_ERROR", error.message);
+    return internalError_('delete_session', error);
   }
+}
+
+function get_open_session_by_user_and_date(user_id, session_date) {
+  return get_session_by_user_and_date({
+    user_id: user_id,
+    session_date: session_date,
+  });
+}
+
+function asObjectOrNull_(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+}
+
+function parseDdMmYyyy_(value) {
+  if (value == null || value === '') {
+    return null;
+  }
+
+  if (Object.prototype.toString.call(value) === '[object Date]' && !Number.isNaN(value.getTime())) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const text = String(value).trim();
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function sameValue_(left, right) {
+  if (left === right) {
+    return true;
+  }
+
+  if (left == null || right == null) {
+    return false;
+  }
+
+  const leftText = String(left).trim();
+  const rightText = String(right).trim();
+  if (leftText === rightText) {
+    return true;
+  }
+
+  const leftNumber = Number(leftText);
+  const rightNumber = Number(rightText);
+  if (
+    leftText !== '' &&
+    rightText !== '' &&
+    Number.isFinite(leftNumber) &&
+    Number.isFinite(rightNumber)
+  ) {
+    return leftNumber === rightNumber;
+  }
+
+  return false;
+}
+
+function badRequest_(message, details) {
+  return error_response('BAD_REQUEST', message, details || {});
+}
+
+function notFound_(message, details) {
+  return error_response('NOT_FOUND', message, details || {});
+}
+
+function internalError_(context, error) {
+  Logger.log(`${context} error: ${error && error.message ? error.message : error}`);
+  return error_response(
+    'INTERNAL_ERROR',
+    error && error.message ? error.message : 'Unexpected error',
+    { context: context },
+  );
 }
